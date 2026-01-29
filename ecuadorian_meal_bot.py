@@ -66,8 +66,8 @@ Preparación: [pasos breves]
 
 ¡Hazlo auténtico, delicioso y únicamente ecuatoriano!"""
 
-    # Use Gemini REST API
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
+    # USAMOS LA VERSIÓN ESPECÍFICA '002' QUE ES LA MÁS ESTABLE
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-002:generateContent?key={GEMINI_API_KEY}"
     
     headers = {
         'Content-Type': 'application/json'
@@ -85,7 +85,11 @@ Preparación: [pasos breves]
     
     if response.status_code == 200:
         result = response.json()
-        return result['candidates'][0]['content']['parts'][0]['text']
+        # Verificamos que la respuesta tenga contenido válido
+        if 'candidates' in result and result['candidates'] and 'content' in result['candidates'][0]:
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            raise Exception(f"Gemini API devolvió una estructura inesperada: {result}")
     else:
         raise Exception(f"Gemini API Error: {response.status_code} - {response.text}")
 
@@ -106,8 +110,9 @@ def is_workday():
 
 def should_send_today(history):
     """Check if we should send today (workday + not already sent)"""
+    # Si quieres probarlo HOY mismo aunque sea fin de semana, comenta la siguiente línea:
     if not is_workday():
-        return False
+       return False
     
     today = datetime.now().date().isoformat()
     last_sent = history.get('last_sent')
@@ -129,29 +134,33 @@ def main():
     
     print("📝 Generating meal plan...")
     
-    # Generate meal plan
-    meal_plan = generate_meal_plan(history)
-    
-    # Prepare message
-    today_str = datetime.now().strftime("%A, %B %d, %Y")
-    message = f"🇪🇨 <b>Plan de Comidas Ecuatorianas</b>\n📅 {today_str}\n\n{meal_plan}"
-    
-    # Send via Telegram
-    print("📤 Sending to Telegram...")
-    result = send_telegram_message(message)
-    
-    if result.get('ok'):
-        print("✅ Message sent successfully!")
+    try:
+        # Generate meal plan
+        meal_plan = generate_meal_plan(history)
         
-        # Update history
-        history['recipes'].append({
-            'date': datetime.now().date().isoformat(),
-            'meals': meal_plan.split('\n')[:3]  # Store first 3 lines (meal names)
-        })
-        history['last_sent'] = datetime.now().date().isoformat()
-        save_history(history)
-    else:
-        print(f"❌ Error sending message: {result}")
+        # Prepare message
+        today_str = datetime.now().strftime("%A, %B %d, %Y")
+        message = f"🇪🇨 <b>Plan de Comidas Ecuatorianas</b>\n📅 {today_str}\n\n{meal_plan}"
+        
+        # Send via Telegram
+        print("📤 Sending to Telegram...")
+        result = send_telegram_message(message)
+        
+        if result.get('ok'):
+            print("✅ Message sent successfully!")
+            
+            # Update history
+            history['recipes'].append({
+                'date': datetime.now().date().isoformat(),
+                'meals': meal_plan.split('\n')[:3]  # Store first 3 lines (meal names)
+            })
+            history['last_sent'] = datetime.now().date().isoformat()
+            save_history(history)
+        else:
+            print(f"❌ Error sending message: {result}")
+            
+    except Exception as e:
+        print(f"❌ Error crítico: {str(e)}")
 
 if __name__ == "__main__":
     main()
