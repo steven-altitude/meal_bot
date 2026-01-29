@@ -30,64 +30,73 @@ def clean_old_recipes(history):
     history['recipes'] = [r for r in history['recipes'] if r['date'] > cutoff_date]
     return history
 
-def get_available_model():
-    """Consulta a la API qué modelos están disponibles realmente para esta Key/Región"""
-    print("🔍 Consultando lista de modelos disponibles en Google API...")
+def get_prioritized_models():
+    """
+    Consulta la API y devuelve una lista de modelos ORDENADA por probabilidad de éxito en Free Tier.
+    Prioridad: Flash 2.0 > Flash 1.5 > Otros Flash > Pro
+    """
+    print("🔍 Consultando lista de modelos disponibles...")
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
     
+    # Lista de respaldo por si falla la consulta
+    fallback_models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash", 
+        "gemini-1.5-flash-001",
+        "gemini-1.5-flash-002",
+        "gemini-pro"
+    ]
+
     try:
         response = requests.get(url)
         if response.status_code != 200:
-            print(f"⚠️ Error listando modelos: {response.status_code} - {response.text}")
-            return None
+            print(f"⚠️ Error listando modelos ({response.status_code}). Usando lista de respaldo.")
+            return fallback_models
             
         data = response.json()
-        models = data.get('models', [])
+        raw_models = [m['name'].replace('models/', '') for m in data.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
         
-        print(f"📋 Modelos encontrados: {len(models)}")
-        
-        # Filtramos modelos que sirvan para 'generateContent'
-        usable_models = []
-        for m in models:
-            if 'generateContent' in m.get('supportedGenerationMethods', []):
-                usable_models.append(m['name']) # El nombre ya viene como 'models/gemini-xyz'
-        
-        print(f"✅ Modelos utilizables para generar texto: {usable_models}")
-        
-        # Prioridad: Buscar versiones Flash (rápidas y baratas/gratis), luego Pro
-        for m in usable_models:
-            if 'flash' in m and '1.5' in m:
-                return m.replace('models/', '') # La API a veces requiere el nombre sin prefijo en la URL, a veces con.
-            
-        # Si no hay flash 1.5, cualquiera con 'pro'
-        for m in usable_models:
-            if 'pro' in m:
-                return m.replace('models/', '')
+        print(f"📋 Total modelos encontrados: {len(raw_models)}")
 
-        # Si no, el primero que haya
-        if usable_models:
-            return usable_models[0].replace('models/', '')
-            
-        return None
+        # Lógica de Ordenamiento para Free Tier
+        sorted_models = []
+        
+        # 1. Los reyes del Free Tier (Flash)
+        priority_keywords = ['gemini-2.0-flash', 'gemini-1.5-flash']
+        for keyword in priority_keywords:
+            for m in raw_models:
+                if keyword in m and m not in sorted_models:
+                    sorted_models.append(m)
+        
+        # 2. Cualquier otro "flash" que haya sobrado
+        for m in raw_models:
+            if 'flash' in m and m not in sorted_models:
+                sorted_models.append(m)
+                
+        # 3. Modelos Pro (Usar con precaución en Free Tier)
+        for m in raw_models:
+            if 'pro' in m and m not in sorted_models:
+                sorted_models.append(m)
+                
+        # 4. El resto
+        for m in raw_models:
+            if m not in sorted_models:
+                sorted_models.append(m)
+
+        print(f"✅ Orden de prueba priorizado: {sorted_models[:5]}...")
+        return sorted_models
 
     except Exception as e:
-        print(f"❌ Error crítico buscando modelos: {str(e)}")
-        return None
+        print(f"❌ Error buscando modelos: {str(e)}")
+        return fallback_models
 
 def generate_meal_plan(history):
-    """Generate a daily meal plan using dynamic model selection"""
+    """Generate a daily meal plan trying multiple models if necessary"""
     
-    # 1. AUTODESCUBRIMIENTO DE MODELO
-    model_name = get_available_model()
+    # 1. Obtener lista priorizada
+    candidate_models = get_prioritized_models()
     
-    if not model_name:
-        # Fallback de emergencia si la lista falla
-        print("⚠️ No se pudo obtener lista dinámica. Usando fallback manual.")
-        model_name = "gemini-1.5-flash" 
-    
-    print(f"🚀 Usando modelo seleccionado: {model_name}")
-
-    # Get recent recipes to avoid repetition
+    # Get recent recipes context
     recent_recipes = [r['meals'] for r in history['recipes'][-14:]] if history['recipes'] else []
     recent_context = "\n".join([f"- {meal}" for meals in recent_recipes for meal in meals])
     
@@ -121,43 +130,48 @@ Preparación: [pasos breves]
 
 ¡Hazlo auténtico, delicioso y únicamente ecuatoriano!"""
 
-    headers = {
-        'Content-Type': 'application/json'
-    }
-    
-    data = {
-        "contents": [{
-            "parts": [{
-                "text": prompt
-            }]
-        }]
-    }
+    headers = {'Content-Type': 'application/json'}
+    data = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    # Intentamos con el modelo descubierto
-    # Nota: A veces la API quiere 'models/nombre' y a veces solo 'nombre'. Probamos ambos.
-    variations = [model_name, f"models/{model_name}"] if "models/" not in model_name else [model_name]
-    
-    for current_model in variations:
-        # Limpiamos slashes duplicados por si acaso
-        current_model = current_model.replace("models/models/", "models/")
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={GEMINI_API_KEY}"
-        
-        try:
-            print(f"📡 Conectando a: ...{url[-40:]}") # Log seguro sin mostrar toda la key
-            response = requests.post(url, headers=headers, json=data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if 'candidates' in result and result['candidates'] and 'content' in result['candidates'][0]:
-                    return result['candidates'][0]['content']['parts'][0]['text']
-            
-            print(f"⚠️ Falló intento con {current_model}: {response.status_code} - {response.text}")
-            
-        except Exception as e:
-            print(f"⚠️ Error conexión: {str(e)}")
+    last_error = None
 
-    raise Exception(f"No se pudo generar contenido con el modelo {model_name}")
+    # 2. Bucle de intentos: Probar modelos uno por uno
+    for model_name in candidate_models:
+        
+        # Intentamos con y sin el prefijo 'models/' por inconsistencias de la API
+        variations = [model_name, f"models/{model_name}"] if "models/" not in model_name else [model_name]
+        
+        for specific_model_name in variations:
+            # Limpieza de slash doble por seguridad
+            specific_model_name = specific_model_name.replace("models/models/", "models/")
+            
+            print(f"🔄 Probando modelo: {specific_model_name}...")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{specific_model_name}:generateContent?key={GEMINI_API_KEY}"
+            
+            try:
+                response = requests.post(url, headers=headers, json=data)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if 'candidates' in result and result['candidates'] and 'content' in result['candidates'][0]:
+                        print(f"🚀 ¡ÉXITO! Contenido generado con: {specific_model_name}")
+                        return result['candidates'][0]['content']['parts'][0]['text']
+                
+                # Si falló, analizamos por qué
+                error_msg = f"Error {response.status_code}: {response.text[:200]}..." # Log corto
+                print(f"⚠️ Falló {specific_model_name}: {error_msg}")
+                
+                # Si es error 429 (Cuota) o 404 (No encontrado), continuamos al siguiente modelo inmediatamente
+                
+            except Exception as e:
+                print(f"⚠️ Error de conexión con {specific_model_name}: {str(e)}")
+                last_error = str(e)
+                
+        # Pequeña pausa antes del siguiente modelo para no saturar
+        time.sleep(1)
+
+    # Si salimos del bucle, todo falló
+    raise Exception(f"Todos los modelos fallaron. Revise su API Key y cuotas.")
 
 def send_telegram_message(message):
     """Send message via Telegram"""
