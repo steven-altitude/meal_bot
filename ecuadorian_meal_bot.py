@@ -1,8 +1,6 @@
 import os
 import json
 from datetime import datetime, timedelta
-from google import genai
-from google.genai import types
 import requests
 
 # Configuration
@@ -32,9 +30,7 @@ def clean_old_recipes(history):
     return history
 
 def generate_meal_plan(history):
-    """Generate a daily meal plan using Gemini API"""
-    # Configure Gemini client
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    """Generate a daily meal plan using Gemini API via REST"""
     
     # Get recent recipes to avoid repetition
     recent_recipes = [r['meals'] for r in history['recipes'][-14:]] if history['recipes'] else []
@@ -70,12 +66,28 @@ Preparación: [pasos breves]
 
 ¡Hazlo auténtico, delicioso y únicamente ecuatoriano!"""
 
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt
-    )
+    # Use Gemini REST API
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    return response.text
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    
+    data = {
+        "contents": [{
+            "parts": [{
+                "text": prompt
+            }]
+        }]
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    
+    if response.status_code == 200:
+        result = response.json()
+        return result['candidates'][0]['content']['parts'][0]['text']
+    else:
+        raise Exception(f"Gemini API Error: {response.status_code} - {response.text}")
 
 def send_telegram_message(message):
     """Send message via Telegram"""
