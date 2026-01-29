@@ -75,29 +75,48 @@ def generate_meal_plan(history):
     recent_recipes = [r['meals'] for r in history['recipes'][-14:]] if history['recipes'] else []
     recent_context = "\n".join([f"- {meal}" for meals in recent_recipes for meal in meals])
     
-    # Prompt ajustado para pedir concisión
-    prompt = f"""Genera 3 recetas auténticas ecuatorianas para hoy: desayuno, almuerzo y merienda.
+    # PROMPT ACTUALIZADO CON TUS NUEVOS REQUERIMIENTOS
+    prompt = f"""Genera un plan de comidas detallado para hoy.
 
-REQUISITOS:
-- Ingredientes nativos de Ecuador.
-- Sé CONCISO y BREVE. (Máximo 200 palabras por receta).
-- No uses introducciones largas, ve directo al grano.
+REGLAS GENERALES:
+- Usa ingredientes fáciles de conseguir en supermercados de Ecuador (Supermaxi, Mi Comisariato).
+- Sé conciso en la preparación.
 
-Recetas a evitar:
+ESTRUCTURA DEL MENÚ:
+
+1. 🌅 DESAYUNO (100% Ecuatoriano):
+- Debe ser una receta tradicional y auténtica de Ecuador (ej: bolones, tigrillo, majado, etc).
+
+2. 🌮 ALMUERZO (Tradicional Completo):
+- Debe incluir DOS platos: SOPA y SEGUNDO (Plato fuerte).
+- El Segundo debe ser balanceado: Proteína + Carbohidrato + Ensalada.
+- OBLIGATORIO: Incluye una sugerencia de plátano (Patacones, Verde asado, Maduro frito o Maduro asado).
+
+3. 🌙 MERIENDA/CENA (Estilo Fit/Internacional):
+- NO tiene que ser comida típica ecuatoriana.
+- Estilo "Foodie Fit" de redes sociales (comida rica pero saludable).
+- Ejemplos: Sánduches gourmet con yogurt griego, Ensaladas con pasta, Wraps de atún, etc.
+
+Recetas recientes a EVITAR repetir:
 {recent_context if recent_context else "Ninguna"}
 
-Formato OBLIGATORIO:
+FORMATO DE RESPUESTA OBLIGATORIO:
 
-🌅 DESAYUNO: [Nombre]
-Ingredientes: [lista corta]
+🌅 DESAYUNO: [Nombre del plato]
+Ingredientes: [lista]
 Preparación: [pasos breves]
 
-🌮 ALMUERZO: [Nombre]
-Ingredientes: [lista corta]
+🥣 ALMUERZO - SOPA: [Nombre de la sopa]
+Ingredientes: [lista]
 Preparación: [pasos breves]
 
-🌙 MERIENDA: [Nombre]
-Ingredientes: [lista corta]
+🍛 ALMUERZO - SEGUNDO: [Nombre del plato fuerte]
+Ingredientes: [lista]
+Acompañante sugerido: [Patacones/Verde/Maduro]
+Preparación: [pasos breves]
+
+🌙 MERIENDA: [Nombre del plato]
+Ingredientes: [lista]
 Preparación: [pasos breves]"""
 
     headers = {'Content-Type': 'application/json'}
@@ -134,10 +153,8 @@ def send_telegram_message(message):
     """Send message via Telegram with chunking for long messages"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # Telegram limit is 4096 chars. We use 4000 to be safe with HTML tags.
     MAX_LENGTH = 4000
     
-    # Si el mensaje es corto, enviar normal
     if len(message) <= MAX_LENGTH:
         data = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -146,7 +163,6 @@ def send_telegram_message(message):
         }
         return requests.post(url, data=data).json()
     
-    # Si es largo, dividirlo
     print(f"⚠️ Mensaje muy largo ({len(message)} chars). Dividiendo...")
     parts = []
     while message:
@@ -154,7 +170,6 @@ def send_telegram_message(message):
             parts.append(message)
             break
         
-        # Intentar cortar en el último salto de línea antes del límite para no cortar palabras
         split_index = message.rfind('\n', 0, MAX_LENGTH)
         if split_index == -1:
             split_index = MAX_LENGTH
@@ -162,27 +177,21 @@ def send_telegram_message(message):
         parts.append(message[:split_index])
         message = message[split_index:]
     
-    # Enviar cada parte
     last_result = None
     for i, part in enumerate(parts):
         print(f"📤 Enviando parte {i+1}/{len(parts)}...")
-        # Añadir indicador de parte si son múltiples
         text_to_send = part if len(parts) == 1 else f"[{i+1}/{len(parts)}]\n{part}"
         
         data = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": text_to_send,
-            # Quitamos parse_mode="HTML" en partes divididas para evitar errores de tags cortados
-            # O puedes dejarlo si confías en que Gemini no corta tags. 
-            # Para seguridad máxima, desactivamos HTML si dividimos.
+            # Quitamos HTML en partes divididas para seguridad
         }
         
         try:
             response = requests.post(url, data=data)
             last_result = response.json()
-            if not last_result.get('ok'):
-                print(f"❌ Error en parte {i+1}: {last_result}")
-            time.sleep(1) # Pausa breve para respetar orden
+            time.sleep(1)
         except Exception as e:
             print(f"❌ Error enviando parte {i+1}: {e}")
             
@@ -213,17 +222,16 @@ def main():
         meal_plan = generate_meal_plan(history)
         
         today_str = datetime.now().strftime("%A, %B %d, %Y")
-        message = f"🇪🇨 <b>Plan de Comidas Ecuatorianas</b>\n📅 {today_str}\n\n{meal_plan}"
+        message = f"🇪🇨 <b>Plan de Comidas (Fit & Tradicional)</b>\n📅 {today_str}\n\n{meal_plan}"
         
         print("📤 Sending to Telegram...")
         result = send_telegram_message(message)
         
-        # Verificar si el último resultado fue exitoso (o si es una lista de envíos)
-        if result and result.get('ok'):
+        if result and (result.get('ok') or isinstance(result, list)): # Handle chunked responses too
             print("✅ Message sent successfully!")
             history['recipes'].append({
                 'date': datetime.now().date().isoformat(),
-                'meals': meal_plan.split('\n')[:3]
+                'meals': meal_plan.split('\n')[:4] # Guardamos un poco más de contexto
             })
             history['last_sent'] = datetime.now().date().isoformat()
             save_history(history)
