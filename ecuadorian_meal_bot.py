@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from datetime import datetime, timedelta
 import requests
 
@@ -10,6 +11,16 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # File to store recipe history
 HISTORY_FILE = 'recipe_history.json'
+
+# Lista de modelos a probar (en orden de preferencia)
+# Si uno falla, el bot probará el siguiente automáticamente.
+MODELS_TO_TRY = [
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-001",
+    "gemini-1.5-flash-002",
+    "gemini-1.5-flash-8b",
+    "gemini-pro"  # El modelo clásico de respaldo
+]
 
 def load_history():
     """Load the recipe history from file"""
@@ -30,7 +41,7 @@ def clean_old_recipes(history):
     return history
 
 def generate_meal_plan(history):
-    """Generate a daily meal plan using Gemini API via REST"""
+    """Generate a daily meal plan using Gemini API via REST with fallback models"""
     
     # Get recent recipes to avoid repetition
     recent_recipes = [r['meals'] for r in history['recipes'][-14:]] if history['recipes'] else []
@@ -66,9 +77,6 @@ Preparación: [pasos breves]
 
 ¡Hazlo auténtico, delicioso y únicamente ecuatoriano!"""
 
-    # USAMOS LA VERSIÓN ESPECÍFICA '002' QUE ES LA MÁS ESTABLE
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-002:generateContent?key={GEMINI_API_KEY}"
-    
     headers = {
         'Content-Type': 'application/json'
     }
@@ -80,18 +88,34 @@ Preparación: [pasos breves]
             }]
         }]
     }
-    
-    response = requests.post(url, headers=headers, json=data)
-    
-    if response.status_code == 200:
-        result = response.json()
-        # Verificamos que la respuesta tenga contenido válido
-        if 'candidates' in result and result['candidates'] and 'content' in result['candidates'][0]:
-            return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            raise Exception(f"Gemini API devolvió una estructura inesperada: {result}")
-    else:
-        raise Exception(f"Gemini API Error: {response.status_code} - {response.text}")
+
+    last_error = None
+
+    # Intentar con cada modelo en la lista hasta que uno funcione
+    for model_name in MODELS_TO_TRY:
+        print(f"🔄 Intentando con modelo: {model_name}...")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        
+        try:
+            response = requests.post(url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'candidates' in result and result['candidates'] and 'content' in result['candidates'][0]:
+                    print(f"✅ Éxito con el modelo: {model_name}")
+                    return result['candidates'][0]['content']['parts'][0]['text']
+            
+            # Si falló, guardamos el error y continuamos al siguiente modelo
+            error_msg = f"Modelo {model_name} falló: {response.status_code} - {response.text}"
+            print(f"⚠️ {error_msg}")
+            last_error = error_msg
+            
+        except Exception as e:
+            print(f"⚠️ Error de conexión con {model_name}: {str(e)}")
+            last_error = str(e)
+
+    # Si llegamos aquí, fallaron todos los modelos
+    raise Exception(f"Todos los modelos fallaron. Último error: {last_error}")
 
 def send_telegram_message(message):
     """Send message via Telegram"""
@@ -110,7 +134,7 @@ def is_workday():
 
 def should_send_today(history):
     """Check if we should send today (workday + not already sent)"""
-    # Si quieres probarlo HOY mismo aunque sea fin de semana, comenta la siguiente línea:
+    # Si quieres probar hoy (aunque sea fin de semana), comenta las siguientes 2 líneas:
     if not is_workday():
        return False
     
@@ -160,7 +184,7 @@ def main():
             print(f"❌ Error sending message: {result}")
             
     except Exception as e:
-        print(f"❌ Error crítico: {str(e)}")
+        print(f"❌ Error crítico final: {str(e)}")
 
 if __name__ == "__main__":
     main()
