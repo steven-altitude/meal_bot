@@ -12,16 +12,6 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 # File to store recipe history
 HISTORY_FILE = 'recipe_history.json'
 
-# Lista de modelos a probar (en orden de preferencia)
-# Si uno falla, el bot probará el siguiente automáticamente.
-MODELS_TO_TRY = [
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-001",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-flash-8b",
-    "gemini-pro"  # El modelo clásico de respaldo
-]
-
 def load_history():
     """Load the recipe history from file"""
     if os.path.exists(HISTORY_FILE):
@@ -40,9 +30,63 @@ def clean_old_recipes(history):
     history['recipes'] = [r for r in history['recipes'] if r['date'] > cutoff_date]
     return history
 
-def generate_meal_plan(history):
-    """Generate a daily meal plan using Gemini API via REST with fallback models"""
+def get_available_model():
+    """Consulta a la API qué modelos están disponibles realmente para esta Key/Región"""
+    print("🔍 Consultando lista de modelos disponibles en Google API...")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
     
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"⚠️ Error listando modelos: {response.status_code} - {response.text}")
+            return None
+            
+        data = response.json()
+        models = data.get('models', [])
+        
+        print(f"📋 Modelos encontrados: {len(models)}")
+        
+        # Filtramos modelos que sirvan para 'generateContent'
+        usable_models = []
+        for m in models:
+            if 'generateContent' in m.get('supportedGenerationMethods', []):
+                usable_models.append(m['name']) # El nombre ya viene como 'models/gemini-xyz'
+        
+        print(f"✅ Modelos utilizables para generar texto: {usable_models}")
+        
+        # Prioridad: Buscar versiones Flash (rápidas y baratas/gratis), luego Pro
+        for m in usable_models:
+            if 'flash' in m and '1.5' in m:
+                return m.replace('models/', '') # La API a veces requiere el nombre sin prefijo en la URL, a veces con.
+            
+        # Si no hay flash 1.5, cualquiera con 'pro'
+        for m in usable_models:
+            if 'pro' in m:
+                return m.replace('models/', '')
+
+        # Si no, el primero que haya
+        if usable_models:
+            return usable_models[0].replace('models/', '')
+            
+        return None
+
+    except Exception as e:
+        print(f"❌ Error crítico buscando modelos: {str(e)}")
+        return None
+
+def generate_meal_plan(history):
+    """Generate a daily meal plan using dynamic model selection"""
+    
+    # 1. AUTODESCUBRIMIENTO DE MODELO
+    model_name = get_available_model()
+    
+    if not model_name:
+        # Fallback de emergencia si la lista falla
+        print("⚠️ No se pudo obtener lista dinámica. Usando fallback manual.")
+        model_name = "gemini-1.5-flash" 
+    
+    print(f"🚀 Usando modelo seleccionado: {model_name}")
+
     # Get recent recipes to avoid repetition
     recent_recipes = [r['meals'] for r in history['recipes'][-14:]] if history['recipes'] else []
     recent_context = "\n".join([f"- {meal}" for meals in recent_recipes for meal in meals])
@@ -89,33 +133,31 @@ Preparación: [pasos breves]
         }]
     }
 
-    last_error = None
-
-    # Intentar con cada modelo en la lista hasta que uno funcione
-    for model_name in MODELS_TO_TRY:
-        print(f"🔄 Intentando con modelo: {model_name}...")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    # Intentamos con el modelo descubierto
+    # Nota: A veces la API quiere 'models/nombre' y a veces solo 'nombre'. Probamos ambos.
+    variations = [model_name, f"models/{model_name}"] if "models/" not in model_name else [model_name]
+    
+    for current_model in variations:
+        # Limpiamos slashes duplicados por si acaso
+        current_model = current_model.replace("models/models/", "models/")
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={GEMINI_API_KEY}"
         
         try:
+            print(f"📡 Conectando a: ...{url[-40:]}") # Log seguro sin mostrar toda la key
             response = requests.post(url, headers=headers, json=data)
             
             if response.status_code == 200:
                 result = response.json()
                 if 'candidates' in result and result['candidates'] and 'content' in result['candidates'][0]:
-                    print(f"✅ Éxito con el modelo: {model_name}")
                     return result['candidates'][0]['content']['parts'][0]['text']
             
-            # Si falló, guardamos el error y continuamos al siguiente modelo
-            error_msg = f"Modelo {model_name} falló: {response.status_code} - {response.text}"
-            print(f"⚠️ {error_msg}")
-            last_error = error_msg
+            print(f"⚠️ Falló intento con {current_model}: {response.status_code} - {response.text}")
             
         except Exception as e:
-            print(f"⚠️ Error de conexión con {model_name}: {str(e)}")
-            last_error = str(e)
+            print(f"⚠️ Error conexión: {str(e)}")
 
-    # Si llegamos aquí, fallaron todos los modelos
-    raise Exception(f"Todos los modelos fallaron. Último error: {last_error}")
+    raise Exception(f"No se pudo generar contenido con el modelo {model_name}")
 
 def send_telegram_message(message):
     """Send message via Telegram"""
@@ -134,7 +176,7 @@ def is_workday():
 
 def should_send_today(history):
     """Check if we should send today (workday + not already sent)"""
-    # Si quieres probar hoy (aunque sea fin de semana), comenta las siguientes 2 líneas:
+    # Si quieres probar hoy, comenta las siguientes lineas:
     if not is_workday():
        return False
     
