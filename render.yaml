@@ -1,0 +1,14 @@
+services:
+  - type: cron
+    name: ecuadorian-meal-bot
+    env: python
+    schedule: "0 13 * * 1-5"  # 8 AM Ecuador time (UTC-5) = 13:00 UTC
+    buildCommand: pip install -r requirements.txt
+    startCommand: python ecuadorian_meal_bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
